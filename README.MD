@@ -25,4 +25,4 @@
    kubectl apply -f gvm-feed-sync.yaml
 
 4. **访问GVM**
-通过 [http://<your-kubernetes-node-ip>:30001](http://<your-kubernetes-node-ip>:30001) 访问 GVM 服务，默认用户名密码为 `admin`，请在登录后在 settings 中自行修改密码。
+通过 (http://your-kubernetes-node-ip:30001) 访问 GVM 服务，默认用户名密码为 `admin`，请在登录后在 settings 中自行修改密码。
