@@ -20,6 +20,9 @@
    ```bash
    kubectl apply -f greenbone-community-kubernetes.yaml
 
-3. **设置更新Feed的周期计划**
+3. **等待GVM部署完成后，设置更新Feed的周期计划**
    ```bash
    kubectl apply -f gvm-feed-sync.yaml
+
+4. **访问GVM**
+   通过(http://<your-kubernetes-node-ip>:30001)访问GVM服务，默认用户名密码为admin，请在登录后在settings中自行修改密码。
