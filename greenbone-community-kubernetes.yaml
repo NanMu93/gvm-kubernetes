@@ -1,0 +1,690 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: greenbone-community
+
+# redis-server start
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-server
+  namespace: greenbone-community
+spec:
+  selector:
+    matchLabels:
+      app: redis-server
+  serviceName: redis-server
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: redis-server
+    spec:
+      initContainers:
+        - name: redis-init
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              chown -R 101:1001 /tmp/redis
+          volumeMounts:
+            - name: redis-socket
+              mountPath: /tmp/redis
+      containers:
+        - name: redis-server
+          image: registry.community.greenbone.net/community/redis-server
+          volumeMounts:
+            - name: redis-socket
+              mountPath: /run/redis
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "4Gi"
+              cpu: "4"
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+      volumes:
+        - name: redis-socket
+          hostPath:
+            path: /app/greenbone-community/redis/socket
+            type: DirectoryOrCreate
+      restartPolicy: Always
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-server
+  namespace: greenbone-community
+spec:
+  selector:
+    app: redis-server
+  clusterIP: None
+
+---
+# redis-server end
+
+# pg-gvm start
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pg-gvm
+  namespace: greenbone-community
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pg-gvm
+  namespace: greenbone-community
+rules:
+  - apiGroups:
+    - "*"
+    resources:
+    - "*"
+    verbs:
+    - "*"
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pg-gvm
+  namespace: greenbone-community
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pg-gvm
+subjects:
+  - kind: ServiceAccount
+    name: pg-gvm
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pg-gvm
+  namespace: greenbone-community
+spec:
+  selector:
+    matchLabels:
+      app: pg-gvm
+  serviceName: pg-gvm
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: pg-gvm
+    spec:
+      serviceAccountName: pg-gvm
+      initContainers:
+        - name: pg-gvm-init
+          image: registry.community.greenbone.net/community/pg-gvm:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ "$(find /mnt/data -mindepth 1 | wc -l)" -eq 0 ]; then
+                cp -rp /var/lib/postgresql/* /mnt/data/; 
+                echo "copy data to /mnt/data..."
+              else
+                echo "copy data skipped"
+              fi
+              chmod 1777 /tmp1
+          volumeMounts:
+            - name: psql-data
+              mountPath: /mnt/data
+            - name: psql-cluster-socket
+              mountPath: /tmp1
+      containers:
+        - name: pg-gvm
+          image: registry.community.greenbone.net/community/pg-gvm:stable
+          volumeMounts:
+            - name: psql-data
+              mountPath: /var/lib/postgresql
+            - name: psql-socket
+              mountPath: /var/run/postgresql
+            - name: psql-cluster-socket
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "100m"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+      volumes:
+        - name: psql-data
+          hostPath:
+            path: /app/greenbone-community/psql/data
+            type: DirectoryOrCreate
+        - name: psql-socket
+          hostPath:
+            path: /app/greenbone-community/psql/socket
+            type: DirectoryOrCreate
+        - name: psql-cluster-socket
+          hostPath:
+            path: /app/greenbone-community/psql/cluster-socket
+            type: DirectoryOrCreate
+      restartPolicy: Always
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-gvm
+  namespace: greenbone-community
+spec:
+  selector:
+    app: pg-gvm
+  clusterIP: None
+
+---
+# pg-gvm end
+
+# gvmd-init start
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvmd-init
+  namespace: greenbone-community
+spec:
+  completions: 1        # 需要成功完成的任务数（默认 1）
+  parallelism: 1        # 并发执行的 Pod 数量（默认 1）
+  backoffLimit: 3       # 最大重试次数（默认 6）
+  template:
+    spec:
+      restartPolicy: OnFailure  # 仅任务失败时重启
+      containers:
+        - name: vulnerability-tests
+          image: registry.community.greenbone.net/community/vulnerability-tests
+          env:
+            - name: FEED_RELEASE
+              value: "24.10"
+          volumeMounts:
+            - name: vt-data
+              mountPath: /mnt
+        - name: scap-data
+          image: registry.community.greenbone.net/community/scap-data
+          volumeMounts:
+            - name: scap-data
+              mountPath: /mnt
+        - name: cert-bund-data
+          image: registry.community.greenbone.net/community/cert-bund-data
+          volumeMounts:
+            - name: cert-data
+              mountPath: /mnt
+        - name: dfn-cert-data
+          image: registry.community.greenbone.net/community/dfn-cert-data
+          volumeMounts:
+            - name: cert-data
+              mountPath: /mnt
+        - name: data-objects
+          image: registry.community.greenbone.net/community/data-objects
+          env:
+            - name: FEED_RELEASE
+              value: "24.10"
+          volumeMounts:
+            - name: data-objects
+              mountPath: /mnt
+        - name: report-formats
+          image: registry.community.greenbone.net/community/report-formats
+          env:
+            - name: FEED_RELEASE
+              value: "24.10"
+          volumeMounts:
+            - name: data-objects
+              mountPath: /mnt
+        - name: notus-data
+          image: registry.community.greenbone.net/community/notus-data
+          volumeMounts:
+            - name: notus-data
+              mountPath: /mnt
+        - name: gpg-data
+          image: registry.community.greenbone.net/community/gpg-data
+          volumeMounts:
+            - name: gpg-data
+              mountPath: /mnt
+      volumes:
+        - name: scap-data
+          hostPath:
+            path: /app/greenbone-community/gvmd/scap-data
+            type: DirectoryOrCreate
+        - name: cert-data
+          hostPath:
+            path: /app/greenbone-community/gvmd/cert-data
+            type: DirectoryOrCreate
+        - name: data-objects
+          hostPath:
+            path: /app/greenbone-community/gvmd/data-objects
+            type: DirectoryOrCreate
+        - name: vt-data
+          hostPath:
+            path: /app/greenbone-community/openvas/plugins
+            type: DirectoryOrCreate
+        - name: gpg-data
+          hostPath:
+            path: /app/greenbone-community/gpg/data
+            type: DirectoryOrCreate
+        - name: notus-data
+          hostPath:
+            path: /app/greenbone-community/notus/data
+            type: DirectoryOrCreate
+---
+# gvmd-init end
+
+# gvmd start
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gvmd
+  namespace: greenbone-community
+spec:
+  selector:
+    matchLabels:
+      app: gvmd
+  # serviceName: gvmd
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: gvmd
+    spec:
+      initContainers:
+        - name: gvmd-data-init
+          image: registry.community.greenbone.net/community/gvmd:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ "$(find /mnt/data -mindepth 1 | wc -l)" -eq 0 ]; then
+                cp -rp /var/lib/gvm/* /mnt/data/; 
+                echo "copy data to /mnt/data..."
+              else
+                echo "copy data skipped"
+              fi
+              chown -R 1001:1001 /mnt/data
+              chown -R 1001:1001 /mnt/gvmd-socket
+          volumeMounts:
+            - name: gvmd-data
+              mountPath: /mnt/data
+            - name: gvmd-socket
+              mountPath: /mnt/gvmd-socket
+      containers:
+        - name: gvmd
+          image: registry.community.greenbone.net/community/gvmd:stable
+          volumeMounts:
+            - name: gvmd-data
+              mountPath: /var/lib/gvm
+            - name: scap-data
+              mountPath: /var/lib/gvm/scap-data/
+            - name: cert-data
+              mountPath: /var/lib/gvm/cert-data
+            - name: data-objects
+              mountPath: /var/lib/gvm/data-objects/gvmd
+            - name: vt-data
+              mountPath: /var/lib/openvas/plugins
+            - name: psql-data
+              mountPath: /var/lib/postgresql
+            - name: gvmd-socket
+              mountPath: /run/gvmd
+            - name: ospd-openvas-socket
+              mountPath: /run/ospd
+            - name: psql-socket
+              mountPath: /var/run/postgresql
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "4Gi"
+              cpu: "4"
+          # securityContext:
+          #   runAsUser: 1001
+          #   runAsGroup: 1001
+      volumes:
+        - name: gvmd-data
+          hostPath:
+            path: /app/greenbone-community/gvmd/data
+            type: DirectoryOrCreate
+        - name: scap-data
+          hostPath:
+            path: /app/greenbone-community/gvmd/scap-data
+            type: Directory
+        - name: cert-data
+          hostPath:
+            path: /app/greenbone-community/gvmd/cert-data
+            type: Directory
+        - name: data-objects
+          hostPath:
+            path: /app/greenbone-community/gvmd/data-objects
+            type: Directory
+        - name: vt-data
+          hostPath:
+            path: /app/greenbone-community/openvas/plugins
+            type: Directory
+        - name: psql-data
+          hostPath:
+            path: /app/greenbone-community/psql/data
+            type: Directory
+        - name: gvmd-socket
+          hostPath:
+            path: /app/greenbone-community/gvmd/socket
+            type: DirectoryOrCreate
+        - name: ospd-openvas-socket
+          hostPath:
+            path: /app/greenbone-community/ospd-openvas/socket
+            type: Directory
+        - name: psql-socket
+          hostPath:
+            path: /app/greenbone-community/psql/socket
+            type: Directory
+      restartPolicy: Always
+
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: gvmd
+#   namespace: greenbone-community
+# spec:
+#   selector:
+#     app: gvmd
+#   clusterIP: None
+
+---
+# gvmd end
+
+# gsa start
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gsa
+  namespace: greenbone-community
+spec:
+  selector:
+    matchLabels:
+      app: gsa
+  template:
+    metadata:
+      labels:
+        app: gsa
+    spec:
+      containers:
+        - name: gsa
+          image: registry.community.greenbone.net/community/gsa:stable
+          ports:
+            - containerPort: 9392
+          volumeMounts:
+            - name: gvmd-socket
+              mountPath: /run/gvmd
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "4Gi"
+              cpu: "4"
+      volumes:
+        - name: gvmd-socket
+          hostPath:
+            path: /app/greenbone-community/gvmd/socket
+            type: Directory
+      restartPolicy: Always
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gsa
+  namespace: greenbone-community
+spec:
+  selector:
+    app: gsa
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 9392
+      targetPort: 9392
+      nodePort: 30001
+
+---
+# gsa end
+
+# openvasd start
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openvasd
+  namespace: greenbone-community
+spec:
+  selector:
+    matchLabels:
+      app: openvasd
+  serviceName: openvasd
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: openvasd
+    spec:
+      restartPolicy: Always
+      initContainers:
+        - name: configure-openvas
+          image: registry.community.greenbone.net/community/openvas-scanner:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              printf "table_driven_lsc = yes\nopenvasd_server = http://openvasd:80\n" > /mnt/openvas.conf
+              sed "s/127/128/" /etc/openvas/openvas_log.conf | sed 's/gvm/openvas/' > /mnt/openvas_log.conf
+              chmod 644 /mnt/openvas.conf
+              chmod 644 /mnt/openvas_log.conf
+              touch /var/log/openvas/openvas.log
+              chmod 666 /var/log/openvas/openvas.log
+          volumeMounts:
+            - name: openvas-data
+              mountPath: /mnt
+            - name: openvas-log-data
+              mountPath: /var/log/openvas
+      containers:
+        - name: openvasd
+          image: registry.community.greenbone.net/community/openvas-scanner:stable
+          volumeMounts:
+            - name: openvas-data
+              mountPath: /etc/openvas
+            - name: openvas-log-data
+              mountPath: /var/log/openvas
+            - name: gpg-data
+              mountPath: /etc/openvas/gnupg
+            - name: notus-data
+              mountPath: /var/lib/notus
+          env:
+          - name: OPENVASD_MODE
+            value: service_notus
+          - name: GNUPGHOME
+            value: /etc/openvas/gnupg
+          - name: LISTENING
+            value: 0.0.0.0:80
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "4Gi"
+              cpu: "4"
+        - name: openvas-logs
+          image: registry.community.greenbone.net/community/openvas-scanner:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cat /etc/openvas/openvas.conf
+              tail -f /var/log/openvas/openvas.log
+          volumeMounts:
+            - name: openvas-data
+              mountPath: /etc/openvas
+            - name: openvas-log-data
+              mountPath: /var/log/openvas
+      volumes:
+        - name: openvas-data
+          hostPath:
+            path: /app/greenbone-community/openvasd/data
+            type: DirectoryOrCreate
+        - name: openvas-log-data
+          hostPath:
+            path: /app/greenbone-community/openvas/log
+            type: DirectoryOrCreate
+        - name: gpg-data
+          hostPath:
+            path: /app/greenbone-community/gpg/data
+            type: Directory
+        - name: notus-data
+          hostPath:
+            path: /app/greenbone-community/notus/data
+            type: Directory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openvasd
+  namespace: greenbone-community
+spec:
+  selector:
+    app: openvasd
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+---
+# openvasd end
+
+# ospd-openvas start
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ospd-openvas
+  namespace: greenbone-community
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ospd-openvas
+  template:
+    metadata:
+      labels:
+        app: ospd-openvas
+    spec:
+      containers:
+        - name: ospd-openvas
+          image: registry.community.greenbone.net/community/ospd-openvas:stable
+          securityContext:
+            privileged: true 
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+          command:
+            [
+              "ospd-openvas",
+              "-f",
+              "--config",
+              "/etc/gvm/ospd-openvas.conf",
+              "--notus-feed-dir",
+              "/var/lib/notus/advisories",
+              "-m",
+              "666",
+            ]
+          volumeMounts:
+            - name: gpg-data
+              mountPath: /etc/openvas/gnupg
+            - name: vt-data
+              mountPath: /var/lib/openvas/plugins
+            - name: notus-data
+              mountPath: /var/lib/notus
+            - name: ospd-openvas-socket
+              mountPath: /run/ospd
+            - name: redis-socket
+              mountPath: /run/redis/
+            - name: openvas-data
+              mountPath: /etc/openvas/
+            - name: openvas-log-data
+              mountPath: /var/log/openvas
+      volumes:
+        - name: gpg-data
+          hostPath:
+            path: /app/greenbone-community/gpg/data
+            type: Directory
+        - name: vt-data
+          hostPath:
+            path: /app/greenbone-community/openvas/plugins
+            type: Directory
+        - name: notus-data
+          hostPath:
+            path: /app/greenbone-community/notus/data
+            type: Directory
+        - name: ospd-openvas-socket
+          hostPath:
+            path: /app/greenbone-community/ospd-openvas/socket
+            type: DirectoryOrCreate
+        - name: redis-socket
+          hostPath:
+            path: /app/greenbone-community/redis/socket
+            type: Directory
+        - name: openvas-data
+          hostPath:
+            path: /app/greenbone-community/openvas/data
+            type: DirectoryOrCreate
+        - name: openvas-log-data
+          hostPath:
+            path: /app/greenbone-community/openvas/log
+            type: Directory
+      restartPolicy: Always
+
+---
+# ospd-openvas end
+
+# gvm-tools start
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvm-tools
+  namespace: greenbone-community
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+        - name: gvm-tools
+          image: registry.community.greenbone.net/community/gvm-tools
+          volumeMounts:
+            - name: gvmd-socket
+              mountPath: /run/gvmd
+            - name: ospd-openvas-socket
+              mountPath: /run/ospd
+      volumes:
+        - name: gvmd-socket
+          hostPath:
+            path: /app/greenbone-community/gvmd/socket
+            type: Directory
+        - name: ospd-openvas-socket
+          hostPath:
+            path: /app/greenbone-community/ospd-openvas/socket
+            type: Directory
+      restartPolicy: OnFailure

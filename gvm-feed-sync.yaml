@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gvmd-feed-sync
+  namespace: greenbone-community
+spec:
+  schedule: "0 0 * * 6"  # 每周六0点执行 Feed 更新
+  # timeZone: Asia/Shanghai # 设置时区
+  concurrencyPolicy: Forbid  # 禁止并发执行
+  successfulJobsHistoryLimit: 3  # 成功历史保留数量
+  failedJobsHistoryLimit: 1   # 失败历史保留数量
+  jobTemplate:
+    spec:
+      backoffLimit: 3       # 最大重试次数
+      ttlSecondsAfterFinished: 3600  # 任务完成后保留时间（秒）
+      template:
+        spec:
+          restartPolicy: OnFailure  # 仅任务失败时重启
+          containers:
+            - name: vulnerability-tests
+              image: registry.community.greenbone.net/community/vulnerability-tests
+              env:
+                - name: FEED_RELEASE
+                  value: "24.10"
+              volumeMounts:
+                - name: vt-data
+                  mountPath: /mnt
+            - name: scap-data
+              image: registry.community.greenbone.net/community/scap-data
+              volumeMounts:
+                - name: scap-data
+                  mountPath: /mnt
+            - name: cert-bund-data
+              image: registry.community.greenbone.net/community/cert-bund-data
+              volumeMounts:
+                - name: cert-data
+                  mountPath: /mnt
+            - name: dfn-cert-data
+              image: registry.community.greenbone.net/community/dfn-cert-data
+              volumeMounts:
+                - name: cert-data
+                  mountPath: /mnt
+            - name: data-objects
+              image: registry.community.greenbone.net/community/data-objects
+              env:
+                - name: FEED_RELEASE
+                  value: "24.10"
+              volumeMounts:
+                - name: data-objects
+                  mountPath: /mnt
+            - name: report-formats
+              image: registry.community.greenbone.net/community/report-formats
+              env:
+                - name: FEED_RELEASE
+                  value: "24.10"
+              volumeMounts:
+                - name: data-objects
+                  mountPath: /mnt
+            - name: notus-data
+              image: registry.community.greenbone.net/community/notus-data
+              volumeMounts:
+                - name: notus-data
+                  mountPath: /mnt
+          volumes:
+            - name: scap-data
+              hostPath:
+                path: /app/greenbone-community/gvmd/scap-data
+                type: Directory
+            - name: cert-data
+              hostPath:
+                path: /app/greenbone-community/gvmd/cert-data
+                type: Directory
+            - name: data-objects
+              hostPath:
+                path: /app/greenbone-community/gvmd/data-objects
+                type: Directory
+            - name: vt-data
+              hostPath:
+                path: /app/greenbone-community/openvas/plugins
+                type: Directory
+            - name: notus-data
+              hostPath:
+                path: /app/greenbone-community/notus/data
+                type: Directory
